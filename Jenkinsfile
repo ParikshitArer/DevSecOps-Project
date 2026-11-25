@@ -1,4 +1,3 @@
-
 // =====================================================================
 // DevSecOps Pipeline
 // Source Scan -> Docker Build -> Image Scan -> DAST -> AWS ECR Push
@@ -107,7 +106,6 @@ pipeline {
                             ).trim()
                         }
 
-                        // Stash report generator for the built-in node.
                         stash name: 'report-tool',
                               includes: 'generate_report.py',
                               allowEmpty: true
@@ -332,7 +330,7 @@ pipeline {
 
                         script {
 
-                            // Full JSON report.
+                            // Generate complete JSON report.
 
                             runScan(
                                 'Trivy JSON Scan',
@@ -487,7 +485,7 @@ pipeline {
         // Agent: built-in
         //
         // Security findings do not block this stage.
-        // Docker build and application stages must still succeed.
+        // Infrastructure and AWS errors can still fail it.
         // =============================================================
 
         stage('Stage-4: AWS ECR Image Push') {
@@ -518,7 +516,7 @@ pipeline {
                         export AWS_DEFAULT_REGION=ap-south-1
 
 
-                        // Check AWS CLI availability.
+                        # Check AWS CLI availability
 
                         if command -v aws >/dev/null 2>&1; then
 
@@ -539,7 +537,7 @@ pipeline {
                         echo "AWS CLI found: $AWS_CLI"
 
 
-                        // Get AWS account ID.
+                        # Get AWS account ID
 
                         ACCOUNT_ID=$("$AWS_CLI" sts get-caller-identity \
                             --query Account \
@@ -551,6 +549,8 @@ pipeline {
                         ECR_IMAGE="${ECR_REGISTRY}/devsecops_repo:${BUILD_NUMBER}"
 
 
+                        # Authenticate with AWS ECR
+
                         echo "Logging in to AWS ECR..."
 
 
@@ -561,6 +561,8 @@ pipeline {
                                 --password-stdin "$ECR_REGISTRY"
 
 
+                        # Tag Docker image
+
                         echo "Tagging Docker image..."
 
 
@@ -569,13 +571,16 @@ pipeline {
                             "$ECR_IMAGE"
 
 
-                        echo "Pushing Docker image to ECR..."
+                        # Push image to ECR
+
+                        echo "Pushing Docker image to AWS ECR..."
 
 
                         docker push "$ECR_IMAGE"
 
 
-                        echo "Successfully pushed image: $ECR_IMAGE"
+                        echo "Successfully pushed image:"
+                        echo "$ECR_IMAGE"
 
                     '''
                 }
@@ -679,7 +684,7 @@ pipeline {
 
 
                 // -----------------------------------------------------
-                // ARCHIVE ALL REPORTS
+                // ARCHIVE REPORTS
                 // -----------------------------------------------------
 
                 archiveArtifacts(
