@@ -38,7 +38,6 @@ pipeline {
     }
 
     stages {
-
         // =============================================================
         // STAGE 1: SOURCE CODE SECURITY (Node-1)
         // =============================================================
@@ -46,11 +45,9 @@ pipeline {
             agent { label 'Node-1' }
 
             stages {
-
                 stage('Pull Source Code') {
                     steps {
                         deleteDir()
-
                         git branch: 'main',
                             url: 'https://github.com/ParikshitArer/DevSecOps-Project.git'
 
@@ -83,7 +80,6 @@ pipeline {
                                 else
                                     rc=$?
                                 fi
-
                                 [ -f gitleaks-report.json ] || printf '[]\\n' > gitleaks-report.json
                                 exit "$rc"
                                 ''',
@@ -95,9 +91,7 @@ pipeline {
 
                 stage('SAST, SCA and SBOM') {
                     failFast false
-
                     parallel {
-
                         stage('Bandit - Python SAST') {
                             steps {
                                 script {
@@ -173,7 +167,6 @@ pipeline {
             agent { label 'built-in' }
 
             stages {
-
                 stage('Receive Source Code') {
                     steps {
                         deleteDir()
@@ -223,27 +216,22 @@ pipeline {
             agent { label 'built-in' }
 
             stages {
-
                 stage('Start Application') {
                     steps {
                         sh '''
                             set -e
-
                             docker rm -f devsecops-app-${BUILD_NUMBER} || true
-
                             docker run -d \
                                 --name devsecops-app-${BUILD_NUMBER} \
                                 -p 127.0.0.1:5000:5000 \
                                 devsecops-demo-api:${BUILD_NUMBER}
 
                             echo "Waiting for application..."
-
                             for i in $(seq 1 15); do
                                 if curl -fsS http://127.0.0.1:5000/ > /dev/null; then
                                     echo "Application is ready."
                                     exit 0
                                 fi
-
                                 echo "Waiting for application... attempt $i"
                                 sleep 2
                             done
@@ -277,7 +265,6 @@ pipeline {
             post {
                 always {
                     sh 'docker rm -f devsecops-app-${BUILD_NUMBER} || true'
-
                     stash name: 'reports-zap',
                           includes: 'zap-report.html,zap-report.json',
                           allowEmpty: true
@@ -287,7 +274,6 @@ pipeline {
 
         // =============================================================
         // STAGE 4: PUSH IMAGE TO AWS ECR
-        // Uses Jenkins stored AWS credentials.
         // =============================================================
         stage('Stage-4: AWS ECR Image Push') {
             agent { label 'built-in' }
@@ -300,42 +286,26 @@ pipeline {
                         passwordVariable: 'AWS_SECRET_ACCESS_KEY'
                     )
                 ]) {
-
                     sh '''
                         set -euo pipefail
                         set +x
-
                         export AWS_DEFAULT_REGION=ap-south-1
 
                         echo "Authenticating with the AWS credentials stored in Jenkins..."
-
-                        ACCOUNT_ID=$(aws sts get-caller-identity \
-                            --query Account \
-                            --output text)
-
+                        ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
                         ECR_REGISTRY="${ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com"
-
                         ECR_IMAGE="${ECR_REGISTRY}/${ECR_REPOSITORY}:${BUILD_NUMBER}"
 
-                        echo "Logging in to Amazon ECR..."
-
-                        aws ecr get-login-password \
-                            --region "$AWS_DEFAULT_REGION" | \
-                            docker login \
-                                --username AWS \
-                                --password-stdin "$ECR_REGISTRY"
+                        aws ecr get-login-password --region "$AWS_DEFAULT_REGION" | \
+                            docker login --username AWS --password-stdin "$ECR_REGISTRY"
 
                         echo "Tagging image..."
-
-                        docker tag \
-                            "devsecops-demo-api:${BUILD_NUMBER}" \
-                            "$ECR_IMAGE"
+                        docker tag "devsecops-demo-api:${BUILD_NUMBER}" "$ECR_IMAGE"
 
                         echo "Pushing image to ECR..."
-
                         docker push "$ECR_IMAGE"
 
-                        echo "Image pushed successfully: $ECR_IMAGE"
+                        echo "Image pushed: $ECR_IMAGE"
                     '''
                 }
             }
@@ -345,17 +315,15 @@ pipeline {
         // STAGE 5: DEPLOY TO APPLICATION EC2 THROUGH SSM
         //
         // Jenkins credential aws-ecr-credentials is used to:
-        // 1. Generate a temporary ECR authorization token.
-        // 2. Send the deployment command through SSM.
-        // 3. Poll the remote deployment result.
+        //   1. Generate an ECR authorization token.
+        //   2. Call SSM SendCommand and poll the deployment result.
         //
-        // No Parameter Store operation is used.
+        // No Parameter Store operation is used in this stage.
         // =============================================================
         stage('Stage-5: Deploy to Application EC2') {
             agent { label 'built-in' }
 
             steps {
-
                 withCredentials([
                     usernamePassword(
                         credentialsId: 'aws-ecr-credentials',
@@ -363,57 +331,56 @@ pipeline {
                         passwordVariable: 'AWS_SECRET_ACCESS_KEY'
                     )
                 ]) {
+                    sh label: 'Deploy application through SSM', script: '''#!/usr/bin/env bash
+set -Eeuo pipefail
+set +x
+umask 077
 
-                    script {
+export AWS_DEFAULT_REGION="ap-south-1"
+export DEPLOY_INSTANCE_ID="i-03470ba1c47c894b5"
+export ECR_REPOSITORY="devsecops_repo"
 
-                        // Resolve AWS account ID using Jenkins credentials.
-                        def accountId = sh(
-                            script: 'set +x; aws sts get-caller-identity --query Account --output text',
-                            returnStdout: true
-                        ).trim()
+# Confirm which IAM identity is being used without printing credentials.
+aws sts get-caller-identity
 
-                        def registry = "${accountId}.dkr.ecr.${env.AWS_DEFAULT_REGION}.amazonaws.com"
+ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
+export ECR_REGISTRY="${ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com"
+export IMAGE_URI="${ECR_REGISTRY}/${ECR_REPOSITORY}:${BUILD_NUMBER}"
 
-                        def imageUri = "${registry}/${env.ECR_REPOSITORY}:${env.BUILD_NUMBER}"
+# Generate a short-lived ECR password. Do not echo or trace this value.
+ECR_PASSWORD="$(aws ecr get-login-password --region "$AWS_DEFAULT_REGION")"
+if [[ -z "$ECR_PASSWORD" ]]; then
+    echo "ERROR: Could not generate an ECR authentication token."
+    exit 1
+fi
 
-                        // Generate temporary ECR password.
-                        def ecrPassword = sh(
-                            script: 'set +x; aws ecr get-login-password --region "$AWS_DEFAULT_REGION"',
-                            returnStdout: true
-                        ).trim()
+# Encode in the shell, avoiding the Groovy method rejected by Jenkins Script Security.
+export ECR_PASSWORD_B64="$(printf '%s' "$ECR_PASSWORD" | base64 | tr -d '\n')"
+unset ECR_PASSWORD
 
-                        if (!ecrPassword) {
-                            error('Could not generate the temporary ECR authentication token.')
-                        }
+# Python safely JSON-encodes the SSM request, including the multiline script.
+python3 - <<'PYTHON'
+import json
+import os
+from pathlib import Path
 
-                        // Base64 encode the token before embedding in the SSM command.
-                        def ecrPasswordB64 = ecrPassword
-                            .getBytes('UTF-8')
-                            .encodeBase64()
-                            .toString()
+registry = os.environ["ECR_REGISTRY"]
+image_uri = os.environ["IMAGE_URI"]
+token_b64 = os.environ["ECR_PASSWORD_B64"]
+instance_id = os.environ["DEPLOY_INSTANCE_ID"]
+build_number = os.environ["BUILD_NUMBER"]
 
-                        ecrPassword = null
-
-                        // -------------------------------------------------
-                        // REMOTE DEPLOYMENT SCRIPT
-                        // Executed on application EC2 through SSM.
-                        // -------------------------------------------------
-                        def deployScript = '''#!/bin/bash
-
-set -euo pipefail
+remote_script = r"""#!/usr/bin/env bash
+set -Eeuo pipefail
 
 ECR_REGISTRY="__ECR_REGISTRY__"
 IMAGE_URI="__IMAGE_URI__"
 ECR_PASSWORD_B64="__ECR_PASSWORD_B64__"
-
 CONTAINER_NAME="securenotes-api"
-
 ENV_FILE="/etc/securenotes/securenotes.env"
-
 DATA_DIR="/opt/securenotes/data"
 
 echo "Checking deployment requirements..."
-
 command -v docker
 
 if [ ! -s "$ENV_FILE" ]; then
@@ -422,46 +389,35 @@ if [ ! -s "$ENV_FILE" ]; then
 fi
 
 echo "Preparing persistent application storage..."
-
 install -d -o 10001 -g 10001 -m 0750 "$DATA_DIR"
 
 echo "Authenticating Docker with ECR..."
-
-printf '%s' "$ECR_PASSWORD_B64" | base64 --decode | docker login \
-    --username AWS \
+printf '%s' "$ECR_PASSWORD_B64" | base64 --decode | docker login \\
+    --username AWS \\
     --password-stdin "$ECR_REGISTRY"
-
 unset ECR_PASSWORD_B64
 
 echo "Pulling image: $IMAGE_URI"
-
 docker pull "$IMAGE_URI"
-
 docker logout "$ECR_REGISTRY" >/dev/null 2>&1 || true
 
 echo "Replacing application container..."
-
 docker rm -f "$CONTAINER_NAME" || true
 
 echo "Starting SecureNotes API..."
-
-docker run -d \
-    --name "$CONTAINER_NAME" \
-    --restart unless-stopped \
-    -p 80:5000 \
-    --env-file "$ENV_FILE" \
-    --mount type=bind,source="$DATA_DIR",target=/srv/data \
-    --log-opt max-size=10m \
-    --log-opt max-file=3 \
+docker run -d \\
+    --name "$CONTAINER_NAME" \\
+    --restart unless-stopped \\
+    -p 80:5000 \\
+    --env-file "$ENV_FILE" \\
+    --mount type=bind,source="$DATA_DIR",target=/srv/data \\
+    --log-opt max-size=10m \\
+    --log-opt max-file=3 \\
     "$IMAGE_URI"
 
 echo "Waiting for Docker health check..."
-
 for i in $(seq 1 60); do
-
-    STATUS=$(docker inspect \
-        --format '{{.State.Health.Status}}' \
-        "$CONTAINER_NAME" 2>/dev/null || true)
+    STATUS=$(docker inspect --format '{{.State.Health.Status}}' "$CONTAINER_NAME" 2>/dev/null || true)
 
     if [ "$STATUS" = "healthy" ]; then
         echo "SecureNotes API is healthy."
@@ -475,127 +431,101 @@ for i in $(seq 1 60); do
     fi
 
     echo "Waiting for application health... attempt $i"
-
     sleep 5
-
 done
 
 echo "Application health check timed out."
-
 docker logs "$CONTAINER_NAME" || true
+exit 1
+"""
 
+remote_script = (remote_script
+    .replace("__ECR_REGISTRY__", registry)
+    .replace("__IMAGE_URI__", image_uri)
+    .replace("__ECR_PASSWORD_B64__", token_b64))
+
+request = {
+    "DocumentName": "AWS-RunShellScript",
+    "InstanceIds": [instance_id],
+    "Comment": f"Deploy SecureNotes build {build_number}",
+    "TimeoutSeconds": 900,
+    "Parameters": {"commands": [remote_script]},
+}
+
+path = Path("ssm-deployment-request.json")
+path.write_text(json.dumps(request), encoding="utf-8")
+path.chmod(0o600)
+PYTHON
+
+# The request contains the temporary ECR token. Delete it on every exit path.
+trap 'rm -f ssm-deployment-request.json; unset ECR_PASSWORD_B64 || true' EXIT
+
+if [[ ! -s ssm-deployment-request.json ]]; then
+    echo "ERROR: Failed to create the SSM deployment request."
+    exit 1
+fi
+
+unset ECR_PASSWORD_B64
+
+echo "Sending deployment command to application EC2..."
+COMMAND_ID="$(aws ssm send-command \\
+    --region "$AWS_DEFAULT_REGION" \\
+    --cli-input-json file://ssm-deployment-request.json \\
+    --query 'Command.CommandId' \\
+    --output text)"
+
+echo "SSM Command ID: $COMMAND_ID"
+echo "Waiting for application deployment..."
+
+for i in $(seq 1 180); do
+    STATUS="$(aws ssm get-command-invocation \\
+        --region "$AWS_DEFAULT_REGION" \\
+        --command-id "$COMMAND_ID" \\
+        --instance-id "$DEPLOY_INSTANCE_ID" \\
+        --query Status \\
+        --output text 2>/dev/null || true)"
+
+    case "$STATUS" in
+        Success)
+            echo "Deployment completed successfully."
+            aws ssm get-command-invocation \\
+                --region "$AWS_DEFAULT_REGION" \\
+                --command-id "$COMMAND_ID" \\
+                --instance-id "$DEPLOY_INSTANCE_ID" \\
+                --query StandardOutputContent \\
+                --output text
+            exit 0
+            ;;
+        Failed|TimedOut|Cancelled|DeliveryTimedOut|ExecutionTimedOut|Undeliverable|Terminated)
+            echo "Deployment failed: $STATUS"
+            echo "Remote error output:"
+            aws ssm get-command-invocation \\
+                --region "$AWS_DEFAULT_REGION" \\
+                --command-id "$COMMAND_ID" \\
+                --instance-id "$DEPLOY_INSTANCE_ID" \\
+                --query StandardErrorContent \\
+                --output text || true
+            echo "Remote command output:"
+            aws ssm get-command-invocation \\
+                --region "$AWS_DEFAULT_REGION" \\
+                --command-id "$COMMAND_ID" \\
+                --instance-id "$DEPLOY_INSTANCE_ID" \\
+                --query StandardOutputContent \\
+                --output text || true
+            exit 1
+            ;;
+    esac
+
+    sleep 5
+done
+
+echo "Deployment timed out while waiting for SSM."
 exit 1
 '''
-
-                        // Insert registry, image and temporary ECR token.
-                        deployScript = deployScript
-                            .replace('__ECR_REGISTRY__', registry)
-                            .replace('__IMAGE_URI__', imageUri)
-                            .replace('__ECR_PASSWORD_B64__', ecrPasswordB64)
-
-                        // Prepare SSM request.
-                        def ssmRequest = [
-                            DocumentName: 'AWS-RunShellScript',
-                            InstanceIds: [env.DEPLOY_INSTANCE_ID],
-                            Comment: "Deploy SecureNotes build ${env.BUILD_NUMBER}",
-                            TimeoutSeconds: 900,
-                            Parameters: [
-                                commands: [deployScript]
-                            ]
-                        ]
-
-                        writeFile(
-                            file: 'ssm-deployment-request.json',
-                            text: groovy.json.JsonOutput.toJson(ssmRequest)
-                        )
-
-                        // -------------------------------------------------
-                        // SEND DEPLOYMENT COMMAND AND WAIT FOR RESULT
-                        // -------------------------------------------------
-                        sh '''
-                            set -euo pipefail
-                            set +x
-
-                            chmod 600 ssm-deployment-request.json
-
-                            trap 'rm -f ssm-deployment-request.json' EXIT
-
-                            echo "Sending deployment command to application EC2..."
-
-                            COMMAND_ID=$(aws ssm send-command \
-                                --region "$AWS_DEFAULT_REGION" \
-                                --cli-input-json file://ssm-deployment-request.json \
-                                --query 'Command.CommandId' \
-                                --output text)
-
-                            echo "SSM Command ID: $COMMAND_ID"
-
-                            echo "Waiting for application deployment..."
-
-                            for i in $(seq 1 120); do
-
-                                STATUS=$(aws ssm get-command-invocation \
-                                    --region "$AWS_DEFAULT_REGION" \
-                                    --command-id "$COMMAND_ID" \
-                                    --instance-id "$DEPLOY_INSTANCE_ID" \
-                                    --query Status \
-                                    --output text 2>/dev/null || true)
-
-                                case "$STATUS" in
-
-                                    Success)
-
-                                        echo "Deployment completed successfully."
-
-                                        aws ssm get-command-invocation \
-                                            --region "$AWS_DEFAULT_REGION" \
-                                            --command-id "$COMMAND_ID" \
-                                            --instance-id "$DEPLOY_INSTANCE_ID" \
-                                            --query StandardOutputContent \
-                                            --output text
-
-                                        exit 0
-                                        ;;
-
-                                    Failed|TimedOut|Cancelled|DeliveryTimedOut|ExecutionTimedOut|Undeliverable|Terminated)
-
-                                        echo "Deployment failed: $STATUS"
-
-                                        echo "Remote error output:"
-
-                                        aws ssm get-command-invocation \
-                                            --region "$AWS_DEFAULT_REGION" \
-                                            --command-id "$COMMAND_ID" \
-                                            --instance-id "$DEPLOY_INSTANCE_ID" \
-                                            --query StandardErrorContent \
-                                            --output text || true
-
-                                        echo "Remote command output:"
-
-                                        aws ssm get-command-invocation \
-                                            --region "$AWS_DEFAULT_REGION" \
-                                            --command-id "$COMMAND_ID" \
-                                            --instance-id "$DEPLOY_INSTANCE_ID" \
-                                            --query StandardOutputContent \
-                                            --output text || true
-
-                                        exit 1
-                                        ;;
-
-                                esac
-
-                                sleep 5
-
-                            done
-
-                            echo "Deployment timed out while waiting for SSM."
-
-                            exit 1
-                        '''
-                    }
                 }
             }
         }
+
     }
 
     // =============================================================
@@ -603,13 +533,10 @@ exit 1
     // =============================================================
     post {
         always {
-
             node('built-in') {
-
                 deleteDir()
 
                 script {
-
                     ['report-tool', 'reports-source', 'reports-image', 'reports-zap'].each { name ->
                         try {
                             unstash name
@@ -619,7 +546,6 @@ exit 1
                     }
 
                     if (fileExists('generate_report.py')) {
-
                         int reportRc = sh(
                             script: """
                                 python3 generate_report.py \\
@@ -636,7 +562,6 @@ exit 1
                         }
 
                         try {
-
                             publishHTML(target: [
                                 reportDir: '.',
                                 reportFiles: 'security-report.html,zap-report.html',
@@ -645,17 +570,11 @@ exit 1
                                 alwaysLinkToLastBuild: true,
                                 allowMissing: true
                             ])
-
                         } catch (Throwable t) {
-
                             echo 'HTML Publisher unavailable. Reports will be available as build artifacts.'
-
                         }
-
                     } else {
-
                         echo 'generate_report.py not found. Skipping consolidated dashboard.'
-
                     }
                 }
 
