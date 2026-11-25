@@ -1,22 +1,30 @@
-
 // =====================================================================
-// DevSecOps pipeline:
-// Source Scan -> Docker Build -> Image Scan -> DAST -> ECR Push
+// DevSecOps Pipeline
+// Source Scan -> Docker Build -> Image Scan -> DAST -> AWS ECR Push
 //
-// Security findings mark the build UNSTABLE instead of FAILED.
-// Infrastructure and essential build failures can still stop the pipeline.
+// Security findings:
+//   - Mark build UNSTABLE
+//   - Display warnings in Jenkins console
+//   - Continue remaining stages
+//
+// Infrastructure/build failures:
+//   - Can still fail the pipeline
+//
+// Reports:
+//   - Individual JSON / TXT / HTML reports
+//   - Consolidated HTML Security Report
 // =====================================================================
 
 
-// ---------------------------------------------------------------------
+// =====================================================================
 // NON-BLOCKING SECURITY SCAN FUNCTION
-// ---------------------------------------------------------------------
+// =====================================================================
 
 def runScan(String name, String cmd, String report) {
 
     int rc = sh(script: cmd, returnStatus: true)
 
-    sh "ls -l ${report} || true"
+    sh "ls -lh '${report}' || true"
 
     if (rc != 0) {
 
@@ -24,17 +32,22 @@ def runScan(String name, String cmd, String report) {
 
         echo """
         =====================================================
-        WARNING: ${name}
-        Exit Code: ${rc}
-        Status: Issues detected / scan error
-        Pipeline: Continuing
-        Report: ${report}
+        SECURITY WARNING: ${name}
+        Exit Code : ${rc}
+        Status    : ISSUES DETECTED / SCAN ERROR
+        Action    : Continuing pipeline
+        Report    : ${report}
         =====================================================
         """
 
     } else {
 
-        echo "${name} PASSED."
+        echo """
+        =====================================================
+        ${name} PASSED
+        Report: ${report}
+        =====================================================
+        """
     }
 }
 
@@ -61,6 +74,7 @@ pipeline {
 
         // =============================================================
         // STAGE 1: SOURCE CODE SECURITY
+        // Agent: Node-1
         // =============================================================
 
         stage('Stage-1: Source Code Security') {
@@ -72,7 +86,7 @@ pipeline {
 
 
                 // -----------------------------------------------------
-                // SOURCE CODE CHECKOUT
+                // 1. SOURCE CODE CHECKOUT
                 // -----------------------------------------------------
 
                 stage('Pull Source Code') {
@@ -92,6 +106,7 @@ pipeline {
                             ).trim()
                         }
 
+                        // Stash the report generator for the built-in node.
                         stash name: 'report-tool',
                               includes: 'generate_report.py',
                               allowEmpty: true
@@ -100,7 +115,7 @@ pipeline {
 
 
                 // -----------------------------------------------------
-                // GITLEAKS
+                // 2. GITLEAKS - SECRET SCANNING
                 // -----------------------------------------------------
 
                 stage('Gitleaks - Secret Scanning') {
@@ -122,9 +137,9 @@ pipeline {
                                     rc=$?
                                 fi
 
-                                [ -f gitleaks-report.json ] || echo '[]' > gitleaks-report.json
+                                [ -f gitleaks-report.json ] || printf '[]\\n' > gitleaks-report.json
 
-                                exit $rc
+                                exit "$rc"
                                 ''',
                                 'gitleaks-report.json'
                             )
@@ -134,7 +149,7 @@ pipeline {
 
 
                 // -----------------------------------------------------
-                // PARALLEL SECURITY SCANS
+                // 3. PARALLEL SECURITY SCANS
                 // -----------------------------------------------------
 
                 stage('SAST, SCA and SBOM') {
@@ -144,7 +159,9 @@ pipeline {
                     parallel {
 
 
+                        // =============================================
                         // BANDIT
+                        // =============================================
 
                         stage('Bandit - Python SAST') {
 
@@ -162,7 +179,9 @@ pipeline {
                         }
 
 
+                        // =============================================
                         // SEMGREP
+                        // =============================================
 
                         stage('Semgrep - SAST') {
 
@@ -180,7 +199,9 @@ pipeline {
                         }
 
 
-                        // PIP AUDIT
+                        // =============================================
+                        // PIP-AUDIT
+                        // =============================================
 
                         stage('pip-audit - Dependency Scanning') {
 
@@ -198,7 +219,9 @@ pipeline {
                         }
 
 
-                        // SYFT
+                        // =============================================
+                        // SYFT - SBOM
+                        // =============================================
 
                         stage('Syft - SBOM Generation') {
 
@@ -219,7 +242,7 @@ pipeline {
 
 
                 // -----------------------------------------------------
-                // STASH APPLICATION
+                // 4. STASH APPLICATION
                 // -----------------------------------------------------
 
                 stage('Stashing Application') {
@@ -235,6 +258,10 @@ pipeline {
                 }
             }
 
+
+            // ---------------------------------------------------------
+            // STAGE 1 POST ACTIONS
+            // ---------------------------------------------------------
 
             post {
 
@@ -253,6 +280,7 @@ pipeline {
 
         // =============================================================
         // STAGE 2: DOCKER BUILD AND IMAGE SECURITY
+        // Agent: built-in
         // =============================================================
 
         stage('Stage-2: Docker Build and Image Security') {
@@ -262,6 +290,10 @@ pipeline {
 
             stages {
 
+
+                // -----------------------------------------------------
+                // RECEIVE SOURCE CODE
+                // -----------------------------------------------------
 
                 stage('Receive Source Code') {
 
@@ -277,7 +309,7 @@ pipeline {
 
 
                 // -----------------------------------------------------
-                // DOCKER BUILD
+                // BUILD DOCKER IMAGE
                 // -----------------------------------------------------
 
                 stage('Build Docker Image') {
@@ -290,7 +322,7 @@ pipeline {
 
 
                 // -----------------------------------------------------
-                // TRIVY
+                // TRIVY CONTAINER SCANNING
                 // -----------------------------------------------------
 
                 stage('Trivy - Container Image Scanning') {
@@ -299,7 +331,7 @@ pipeline {
 
                         script {
 
-                            // Full JSON report
+                            // Full JSON report.
 
                             runScan(
                                 'Trivy JSON Scan',
@@ -308,10 +340,11 @@ pipeline {
                             )
 
 
-                            // HIGH and CRITICAL vulnerability check
+                            // HIGH and CRITICAL vulnerability check.
+                            // Unfixed vulnerabilities are excluded from this gate.
 
                             runScan(
-                                'Trivy Security Gate',
+                                'Trivy Security Scan',
                                 'trivy image --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 --format table --output trivy-report.txt devsecops-demo-api:${BUILD_NUMBER}',
                                 'trivy-report.txt'
                             )
@@ -320,6 +353,10 @@ pipeline {
                 }
             }
 
+
+            // ---------------------------------------------------------
+            // STAGE 2 POST ACTIONS
+            // ---------------------------------------------------------
 
             post {
 
@@ -338,6 +375,7 @@ pipeline {
 
         // =============================================================
         // STAGE 3: OWASP ZAP DAST
+        // Agent: built-in
         // =============================================================
 
         stage('Stage-3: OWASP ZAP DAST Scan') {
@@ -366,7 +404,9 @@ pipeline {
                                 -p 127.0.0.1:5000:5000 \
                                 devsecops-demo-api:${BUILD_NUMBER}
 
-                            echo "Waiting for application..."
+
+                            echo "Waiting for application to become ready..."
+
 
                             for i in $(seq 1 15); do
 
@@ -382,6 +422,7 @@ pipeline {
                                 sleep 2
                             done
 
+
                             echo "Application failed to start."
 
                             docker logs devsecops-app-${BUILD_NUMBER} || true
@@ -393,7 +434,7 @@ pipeline {
 
 
                 // -----------------------------------------------------
-                // ZAP SCAN
+                // OWASP ZAP SECURITY SCAN
                 // -----------------------------------------------------
 
                 stage('OWASP ZAP Security Scan') {
@@ -419,6 +460,10 @@ pipeline {
             }
 
 
+            // ---------------------------------------------------------
+            // STAGE 3 POST ACTIONS
+            // ---------------------------------------------------------
+
             post {
 
                 always {
@@ -438,6 +483,10 @@ pipeline {
 
         // =============================================================
         // STAGE 4: AWS ECR IMAGE PUSH
+        // Agent: built-in
+        //
+        // This stage is reached even when security findings exist.
+        // It still requires successful Docker build and application stages.
         // =============================================================
 
         stage('Stage-4: AWS ECR Image Push') {
@@ -460,11 +509,15 @@ pipeline {
                 ]) {
 
                     sh '''
+
                         set -e
 
                         set +x
 
                         export AWS_DEFAULT_REGION=ap-south-1
+
+
+                        // Look up AWS account ID.
 
                         ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 
@@ -475,21 +528,25 @@ pipeline {
 
                         echo "Logging in to AWS ECR..."
 
+
                         aws ecr get-login-password --region "$AWS_DEFAULT_REGION" | \
                             docker login --username AWS --password-stdin "$ECR_REGISTRY"
 
 
                         echo "Tagging Docker image..."
 
+
                         docker tag devsecops-demo-api:${BUILD_NUMBER} "$ECR_IMAGE"
 
 
-                        echo "Pushing image to ECR..."
+                        echo "Pushing Docker image to ECR..."
+
 
                         docker push "$ECR_IMAGE"
 
 
                         echo "Successfully pushed image: $ECR_IMAGE"
+
                     '''
                 }
             }
@@ -500,6 +557,7 @@ pipeline {
 
     // =============================================================
     // GLOBAL POST: SECURITY REPORT GENERATION
+    // Runs after every build, including unstable and failed builds.
     // =============================================================
 
     post {
@@ -507,3 +565,113 @@ pipeline {
         always {
 
             node('built-in') {
+
+                deleteDir()
+
+
+                script {
+
+                    // -------------------------------------------------
+                    // RETRIEVE AVAILABLE REPORTS
+                    // -------------------------------------------------
+
+                    ['report-tool', 'reports-source', 'reports-image', 'reports-zap'].each { name ->
+
+                        try {
+
+                            unstash name
+
+                        } catch (err) {
+
+                            echo "No '${name}' data available."
+                        }
+                    }
+
+
+                    // -------------------------------------------------
+                    // GENERATE CONSOLIDATED SECURITY REPORT
+                    // -------------------------------------------------
+
+                    if (fileExists('generate_report.py')) {
+
+                        int reportRc = sh(
+
+                            script: """
+                                python3 generate_report.py \
+                                    --out security-report.html \
+                                    --build '${env.BUILD_NUMBER}' \
+                                    --commit '${env.GIT_SHORT ?: 'unknown'}'
+                            """,
+
+                            returnStatus: true
+                        )
+
+
+                        if (reportRc != 0) {
+
+                            unstable('Security report generator returned a non-zero exit code.')
+
+                            echo "WARNING: Report generator returned exit code ${reportRc}. Continuing post actions."
+                        }
+
+
+                        // -------------------------------------------------
+                        // ARCHIVE REPORTS
+                        // -------------------------------------------------
+
+                        archiveArtifacts(
+
+                            artifacts: '*.json,*.txt,*.html',
+
+                            allowEmptyArchive: true
+                        )
+
+
+                        // -------------------------------------------------
+                        // PUBLISH HTML REPORT
+                        // -------------------------------------------------
+
+                        try {
+
+                            publishHTML(target: [
+
+                                reportDir: '.',
+
+                                reportFiles: 'security-report.html,zap-report.html',
+
+                                reportName: 'Security Report',
+
+                                keepAll: true,
+
+                                alwaysLinkToLastBuild: true,
+
+                                allowMissing: true
+                            ])
+
+                        } catch (Throwable t) {
+
+                            echo 'HTML Publisher unavailable. Download security-report.html from build artifacts.'
+                        }
+
+                    } else {
+
+                        echo 'generate_report.py not found. Skipping dashboard.'
+                    }
+                }
+
+
+                // Archive generated reports
+
+                archiveArtifacts(
+
+                    artifacts: '*.json,*.txt,*.html',
+
+                    allowEmptyArchive: true
+                )
+            }
+
+
+            echo 'DevSecOps pipeline execution completed.'
+        }
+    }
+}
