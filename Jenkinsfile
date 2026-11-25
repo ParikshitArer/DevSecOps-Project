@@ -506,48 +506,7 @@ pipeline {
 
                         passwordVariable: 'AWS_SECRET_ACCESS_KEY'
                     )
-                ]) {
-
-                    sh '''
-
-                        set -e
-
-                        set +x
-
-                        export AWS_DEFAULT_REGION=ap-south-1
-
-
-                        // Look up AWS account ID.
-
-                        ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-
-                        ECR_REGISTRY="${ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com"
-
-                        ECR_IMAGE="${ECR_REGISTRY}/devsecops_repo:${BUILD_NUMBER}"
-
-
-                        echo "Logging in to AWS ECR..."
-
-
-                        aws ecr get-login-password --region "$AWS_DEFAULT_REGION" | \
-                            docker login --username AWS --password-stdin "$ECR_REGISTRY"
-
-
-                        echo "Tagging Docker image..."
-
-
-                        docker tag devsecops-demo-api:${BUILD_NUMBER} "$ECR_IMAGE"
-
-
-                        echo "Pushing Docker image to ECR..."
-
-
-                        docker push "$ECR_IMAGE"
-
-
-                        echo "Successfully pushed image: $ECR_IMAGE"
-
-                    '''
+                ])
                 }
             }
         }
