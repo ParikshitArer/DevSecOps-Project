@@ -56,12 +56,16 @@ pipeline {
                         script {
                             // Some Gitleaks versions write no file when nothing is found,
                             // so create an empty report to show the scan ran and was clean.
-                            runScan('Gitleaks', '''
-                                gitleaks git --redact --report-format json --report-path gitleaks-report.json .
-                                rc=$?
-                                [ -f gitleaks-report.json ] || echo '[]' > gitleaks-report.json
-                                exit $rc
-                            ''', 'gitleaks-report.json')
+                           runScan('Gitleaks', '''
+    if gitleaks git --redact --report-format json --report-path gitleaks-report.json .; then
+        rc=0
+    else
+        rc=$?
+    fi
+
+    [ -f gitleaks-report.json ] || echo '[]' > gitleaks-report.json
+    exit $rc
+''', 'gitleaks-report.json')
                         }
                     }
                 }
