@@ -1,0 +1,8 @@
+# Old pure-Python releases with known CVEs, for pip-audit / Trivy / Snyk demos only
+requests==2.19.1
+urllib3==1.23
+certifi==2018.4.16
+idna==2.7
+chardet==3.0.4
+# needed so demo/legacy_vulnerable.py imports (the unsafe call is flagged, the version is current)
+PyYAML==6.0.2

@@ -1,0 +1,19 @@
+# Local run only:  docker compose up --build
+services:
+  api:
+    build: .
+    ports:
+      - "127.0.0.1:5000:5000"
+    environment:
+      SECRET_KEY: ${SECRET_KEY:?set SECRET_KEY in your shell or an .env file}
+    volumes:
+      - notes-data:/srv/data
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+volumes:
+  notes-data:

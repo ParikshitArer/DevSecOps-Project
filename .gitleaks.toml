@@ -1,0 +1,8 @@
+title = "securenotes gitleaks config"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "demo/ holds intentionally vulnerable training material"
+paths = ['''^demo/''']
