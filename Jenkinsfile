@@ -1,4 +1,4 @@
-```groovy
+
 // =====================================================================
 // DevSecOps pipeline:
 // Source Scan -> Docker Build -> Image Scan -> DAST -> ECR Push
