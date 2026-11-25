@@ -1,20 +1,25 @@
-
+```groovy
 // =====================================================================
 // SecureNotes DevSecOps Pipeline
 //
-// Source Scan -> Docker Build -> Image Scan -> DAST
-// -> ECR Push -> EC2 Deployment
+// GitHub -> Source Scanning -> Docker Build -> Trivy
+// -> OWASP ZAP -> ECR Push -> EC2 Deployment
 //
 // Authentication:
-//   Jenkins EC2 IAM Role: Jenkins-main-ec2
-//   Application EC2 IAM Role: ec2-ecr-roles
+//   Jenkins ECR credentials: aws-ecr-credentials
+//   Jenkins EC2 IAM role: Jenkins-main-ec2
+//   Application EC2: i-03470ba1c47c894b5
+//
+// ECR authentication:
+//   Jenkins generates temporary ECR token.
+//   Token is stored temporarily in SSM Parameter Store SecureString.
+//   Application EC2 retrieves token through SSM.
 //
 // Security findings:
 //   Mark build UNSTABLE and continue.
 //
 // Infrastructure/build failures:
 //   Can fail the pipeline.
-//
 // =====================================================================
 
 
@@ -59,6 +64,10 @@ pipeline {
     agent none
 
 
+    // =================================================================
+    // PIPELINE OPTIONS
+    // =================================================================
+
     options {
 
         timestamps()
@@ -68,12 +77,14 @@ pipeline {
         disableConcurrentBuilds()
 
         buildDiscarder(logRotator(numToKeepStr: '20'))
+
+        skipDefaultCheckout(true)
     }
 
 
-    // =============================================================
-    // PIPELINE ENVIRONMENT
-    // =============================================================
+    // =================================================================
+    // GLOBAL ENVIRONMENT
+    // =================================================================
 
     environment {
 
@@ -108,6 +119,8 @@ pipeline {
                 stage('Pull Source Code') {
 
                     steps {
+
+                        deleteDir()
 
                         git branch: 'main',
                             url: 'https://github.com/ParikshitArer/DevSecOps-Project.git'
@@ -298,6 +311,8 @@ pipeline {
             stages {
 
 
+                // RECEIVE APPLICATION
+
                 stage('Receive Source Code') {
 
                     steps {
@@ -322,7 +337,7 @@ pipeline {
                 }
 
 
-                // TRIVY SCAN
+                // TRIVY
 
                 stage('Trivy - Container Image Scanning') {
 
@@ -330,12 +345,16 @@ pipeline {
 
                         script {
 
+                            // Full JSON report.
+
                             runScan(
                                 'Trivy JSON Scan',
                                 'trivy image --format json --output trivy-report.json devsecops-demo-api:${BUILD_NUMBER}',
                                 'trivy-report.json'
                             )
 
+
+                            // HIGH and CRITICAL vulnerabilities.
 
                             runScan(
                                 'Trivy Security Scan',
@@ -404,8 +423,9 @@ pipeline {
                                     exit 0
                                 fi
 
-                                sleep 2
+                                echo "Waiting for application... attempt $i"
 
+                                sleep 2
                             done
 
 
@@ -462,10 +482,9 @@ pipeline {
 
 
         // =============================================================
-        // STAGE 4: PUSH IMAGE TO AWS ECR
+        // STAGE 4: AWS ECR IMAGE PUSH
         //
-        // Authentication: Jenkins EC2 IAM role
-        // No static AWS credentials required.
+        // Uses Jenkins credential: aws-ecr-credentials
         // =============================================================
 
         stage('Stage-4: AWS ECR Image Push') {
@@ -475,63 +494,73 @@ pipeline {
 
             steps {
 
-                sh '''
+                withCredentials([
 
-                    set -e
+                    usernamePassword(
 
-                    set +x
+                        credentialsId: 'aws-ecr-credentials',
 
-                    export AWS_DEFAULT_REGION=ap-south-1
+                        usernameVariable: 'AWS_ACCESS_KEY_ID',
 
+                        passwordVariable: 'AWS_SECRET_ACCESS_KEY'
+                    )
+                ]) {
 
-                    echo "Checking Jenkins EC2 IAM identity..."
+                    sh '''
 
-                    aws sts get-caller-identity
+                        set -e
 
+                        set +x
 
-                    # Get AWS account ID
-
-                    ACCOUNT_ID=$(aws sts get-caller-identity \
-                        --query Account \
-                        --output text)
-
-
-                    ECR_REGISTRY="${ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com"
-
-                    ECR_IMAGE="${ECR_REGISTRY}/${ECR_REPOSITORY}:${BUILD_NUMBER}"
+                        export AWS_DEFAULT_REGION=ap-south-1
 
 
-                    # Authenticate with ECR using Jenkins EC2 role
-
-                    echo "Logging in to AWS ECR..."
-
-                    aws ecr get-login-password \
-                        --region "$AWS_DEFAULT_REGION" | \
-                        docker login \
-                            --username AWS \
-                            --password-stdin "$ECR_REGISTRY"
+                        echo "Authenticating with configured Jenkins AWS credentials..."
 
 
-                    # Tag image
-
-                    echo "Tagging image..."
-
-                    docker tag \
-                        devsecops-demo-api:${BUILD_NUMBER} \
-                        "$ECR_IMAGE"
+                        ACCOUNT_ID=$(aws sts get-caller-identity \
+                            --query Account \
+                            --output text)
 
 
-                    # Push image
+                        ECR_REGISTRY="${ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com"
 
-                    echo "Pushing image to ECR..."
-
-                    docker push "$ECR_IMAGE"
+                        ECR_IMAGE="${ECR_REGISTRY}/${ECR_REPOSITORY}:${BUILD_NUMBER}"
 
 
-                    echo "Successfully pushed image:"
+                        echo "ECR registry: $ECR_REGISTRY"
 
-                    echo "$ECR_IMAGE"
-                '''
+
+                        # Authenticate with ECR
+
+                        aws ecr get-login-password \
+                            --region "$AWS_DEFAULT_REGION" | \
+                            docker login \
+                                --username AWS \
+                                --password-stdin "$ECR_REGISTRY"
+
+
+                        # Tag image
+
+                        echo "Tagging Docker image..."
+
+                        docker tag \
+                            devsecops-demo-api:${BUILD_NUMBER} \
+                            "$ECR_IMAGE"
+
+
+                        # Push image
+
+                        echo "Pushing Docker image to ECR..."
+
+                        docker push "$ECR_IMAGE"
+
+
+                        echo "Successfully pushed image:"
+
+                        echo "$ECR_IMAGE"
+                    '''
+                }
             }
         }
 
@@ -540,9 +569,14 @@ pipeline {
         // =============================================================
         // STAGE 5: DEPLOY APPLICATION TO APPLICATION EC2
         //
-        // Jenkins -> AWS SSM -> Application EC2
+        // Jenkins Credentials:
+        //   Generate temporary ECR authorization token.
         //
-        // Application EC2 uses its own IAM role to pull from ECR.
+        // Jenkins EC2 IAM Role:
+        //   Store temporary token and execute SSM commands.
+        //
+        // Application EC2 SSM Role:
+        //   Retrieve temporary token from Parameter Store.
         // =============================================================
 
         stage('Stage-5: Deploy to Application EC2') {
@@ -552,39 +586,60 @@ pipeline {
 
             steps {
 
-                script {
+                withCredentials([
+
+                    usernamePassword(
+
+                        credentialsId: 'aws-ecr-credentials',
+
+                        usernameVariable: 'AWS_ACCESS_KEY_ID',
+
+                        passwordVariable: 'AWS_SECRET_ACCESS_KEY'
+                    )
+                ]) {
 
 
-                    // -------------------------------------------------
-                    // GET AWS ACCOUNT ID AND IMAGE URI
-                    // -------------------------------------------------
-
-                    def accountId = sh(
-
-                        script: 'aws sts get-caller-identity --query Account --output text',
-
-                        returnStdout: true
-                    ).trim()
+                    script {
 
 
-                    def registry = "${accountId}.dkr.ecr.${env.AWS_DEFAULT_REGION}.amazonaws.com"
+                        // -------------------------------------------------
+                        // IMAGE DETAILS
+                        // -------------------------------------------------
 
-                    def imageUri = "${registry}/${env.ECR_REPOSITORY}:${env.BUILD_NUMBER}"
+                        def accountId = sh(
+
+                            script: 'aws sts get-caller-identity --query Account --output text',
+
+                            returnStdout: true
+                        ).trim()
 
 
-                    // -------------------------------------------------
-                    // CREATE REMOTE DEPLOYMENT SCRIPT
-                    // -------------------------------------------------
+                        def registry = "${accountId}.dkr.ecr.${env.AWS_DEFAULT_REGION}.amazonaws.com"
 
-                    def deployScript = '''#!/bin/bash
+                        def imageUri = "${registry}/${env.ECR_REPOSITORY}:${env.BUILD_NUMBER}"
 
-set -eu
+                        def parameterName = "/securenotes/deploy/ecr-password/build-${env.BUILD_NUMBER}"
+
+
+                        // -------------------------------------------------
+                        // REMOTE APPLICATION DEPLOYMENT SCRIPT
+                        //
+                        // IMPORTANT:
+                        // This script does NOT call ecr get-login-password.
+                        // It retrieves the token generated by Jenkins.
+                        // -------------------------------------------------
+
+                        def deployScript = '''#!/bin/bash
+
+set -euo pipefail
 
 AWS_REGION="ap-south-1"
 
 ECR_REGISTRY="__ECR_REGISTRY__"
 
 IMAGE_URI="__IMAGE_URI__"
+
+PARAMETER_NAME="__PARAMETER_NAME__"
 
 CONTAINER_NAME="securenotes-api"
 
@@ -593,14 +648,14 @@ ENV_FILE="/etc/securenotes/securenotes.env"
 DATA_DIR="/opt/securenotes/data"
 
 
-echo "Checking Docker and AWS CLI..."
+echo "Checking deployment requirements..."
 
 command -v docker
 
 command -v aws
 
 
-# Verify environment configuration
+# Check application environment file
 
 if [ ! -s "$ENV_FILE" ]; then
 
@@ -613,37 +668,64 @@ fi
 
 # Prepare persistent application storage
 
+echo "Preparing application storage..."
+
 install -d -o 10001 -g 10001 -m 0750 "$DATA_DIR"
 
 
-# Authenticate to ECR using the application EC2 IAM role
+# Retrieve temporary ECR token from Parameter Store
 
-echo "Authenticating with ECR..."
+echo "Retrieving temporary ECR authentication token..."
 
-ECR_PASSWORD=$(aws ecr get-login-password --region "$AWS_REGION")
+ECR_PASSWORD=$(aws ssm get-parameter \
+    --name "$PARAMETER_NAME" \
+    --with-decryption \
+    --query 'Parameter.Value' \
+    --output text \
+    --region "$AWS_REGION")
+
+
+if [ -z "$ECR_PASSWORD" ]; then
+
+    echo "ERROR: Unable to retrieve ECR authentication token."
+
+    exit 1
+
+fi
+
+
+# Authenticate Docker using Jenkins-generated token
+
+echo "Logging in to ECR..."
 
 printf '%s' "$ECR_PASSWORD" | docker login \
     --username AWS \
     --password-stdin "$ECR_REGISTRY"
 
+
 unset ECR_PASSWORD
 
 
-# Pull the exact image produced by this Jenkins build
+# Pull image from ECR
 
 echo "Pulling image: $IMAGE_URI"
 
 docker pull "$IMAGE_URI"
 
 
-# Stop previous application container
+# Remove stored Docker registry credentials
 
-echo "Removing previous container..."
+docker logout "$ECR_REGISTRY" >/dev/null 2>&1 || true
+
+
+# Remove previous application container
+
+echo "Removing previous application container..."
 
 docker rm -f "$CONTAINER_NAME" || true
 
 
-# Start new application container
+# Start the new container
 
 echo "Starting SecureNotes API..."
 
@@ -668,6 +750,7 @@ for i in $(seq 1 60); do
         --format '{{.State.Health.Status}}' \
         "$CONTAINER_NAME" 2>/dev/null || true)
 
+
     if [ "$STATUS" = "healthy" ]; then
 
         echo "SecureNotes API is healthy."
@@ -675,6 +758,7 @@ for i in $(seq 1 60); do
         exit 0
 
     fi
+
 
     if [ "$STATUS" = "unhealthy" ]; then
 
@@ -685,6 +769,7 @@ for i in $(seq 1 60); do
         exit 1
 
     fi
+
 
     echo "Waiting for application... attempt $i"
 
@@ -701,125 +786,271 @@ exit 1
 '''
 
 
-                    // Substitute the exact image details.
+                        // Substitute image and parameter details.
 
-                    deployScript = deployScript
-                        .replace('__ECR_REGISTRY__', registry)
-                        .replace('__IMAGE_URI__', imageUri)
+                        deployScript = deployScript
 
+                            .replace('__ECR_REGISTRY__', registry)
 
-                    // -------------------------------------------------
-                    // CREATE SSM PARAMETERS JSON
-                    // -------------------------------------------------
+                            .replace('__IMAGE_URI__', imageUri)
 
-                    writeFile(
-
-                        file: 'ssm-parameters.json',
-
-                        text: groovy.json.JsonOutput.toJson([
-                            commands: [deployScript]
-                        ])
-                    )
-                }
+                            .replace('__PARAMETER_NAME__', parameterName)
 
 
-                // -----------------------------------------------------
-                // SEND DEPLOYMENT COMMAND TO APPLICATION EC2
-                // -----------------------------------------------------
+                        // Create SSM parameters JSON.
 
-                sh '''
+                        writeFile(
 
-                    set -e
+                            file: 'ssm-parameters.json',
 
-                    set +x
+                            text: groovy.json.JsonOutput.toJson([
 
-                    export AWS_DEFAULT_REGION=ap-south-1
+                                commands: [deployScript]
 
-
-                    echo "Checking Jenkins IAM role..."
-
-                    aws sts get-caller-identity
+                            ])
+                        )
+                    }
 
 
-                    echo "Sending deployment command to application EC2..."
+
+                    // =================================================
+                    // GENERATE TOKEN, STORE SECURELY AND DEPLOY
+                    // =================================================
+
+                    sh '''
+
+                        set -e
+
+                        set +x
+
+                        export AWS_DEFAULT_REGION=ap-south-1
 
 
-                    COMMAND_ID=$(aws ssm send-command \
-                        --region "$AWS_DEFAULT_REGION" \
-                        --instance-ids "$DEPLOY_INSTANCE_ID" \
-                        --document-name "AWS-RunShellScript" \
-                        --comment "Deploy SecureNotes build ${BUILD_NUMBER}" \
-                        --timeout-seconds 900 \
-                        --parameters file://ssm-parameters.json \
-                        --query "Command.CommandId" \
-                        --output text)
+                        # Unique parameter for this Jenkins build.
+
+                        PARAMETER_NAME="/securenotes/deploy/ecr-password/build-${BUILD_NUMBER}"
 
 
-                    echo "SSM Command ID: $COMMAND_ID"
+                        # Temporary protected file.
+
+                        umask 077
+
+                        PARAMETER_FILE=$(mktemp)
 
 
-                    echo "Waiting for deployment..."
+                        # Cleanup runs whether deployment succeeds or fails.
+
+                        cleanup() {
+
+                            unset ECR_PASSWORD
+
+                            aws ssm delete-parameter \
+                                --name "$PARAMETER_NAME" \
+                                --region "$AWS_DEFAULT_REGION" \
+                                >/dev/null 2>&1 || true
+
+                            rm -f "$PARAMETER_FILE"
+
+                            rm -f ssm-parameters.json
+                        }
+
+                        trap cleanup EXIT
 
 
-                    for i in $(seq 1 120); do
+                        # -------------------------------------------------
+                        # 1. GENERATE ECR TOKEN USING JENKINS CREDENTIALS
+                        # -------------------------------------------------
 
-                        STATUS=$(aws ssm get-command-invocation \
+                        echo "Generating temporary ECR authentication token..."
+
+
+                        ECR_PASSWORD=$(aws ecr get-login-password \
+                            --region "$AWS_DEFAULT_REGION")
+
+
+                        if [ -z "$ECR_PASSWORD" ]; then
+
+                            echo "ERROR: Could not generate ECR token."
+
+                            exit 1
+
+                        fi
+
+
+                        # -------------------------------------------------
+                        # 2. SWITCH TO JENKINS EC2 IAM ROLE
+                        # -------------------------------------------------
+
+                        # Remove Jenkins static credentials from this shell.
+                        # Subsequent SSM API calls use Jenkins EC2 IAM role.
+
+                        unset AWS_ACCESS_KEY_ID
+
+                        unset AWS_SECRET_ACCESS_KEY
+
+                        unset AWS_SESSION_TOKEN
+
+                        unset AWS_SECURITY_TOKEN
+
+
+                        echo "Checking Jenkins EC2 IAM role..."
+
+                        aws sts get-caller-identity
+
+
+                        # -------------------------------------------------
+                        # 3. CREATE SECURE PARAMETER PAYLOAD
+                        # -------------------------------------------------
+
+                        export ECR_PASSWORD
+
+                        export PARAMETER_NAME
+
+                        export PARAMETER_FILE
+
+
+                        python3 - <<'PY'
+import json
+import os
+
+payload = {
+    "Name": os.environ["PARAMETER_NAME"],
+    "Type": "SecureString",
+    "Value": os.environ["ECR_PASSWORD"],
+    "Overwrite": True
+}
+
+with open(os.environ["PARAMETER_FILE"], "w") as output:
+    json.dump(payload, output)
+PY
+
+
+                        chmod 600 "$PARAMETER_FILE"
+
+
+                        # -------------------------------------------------
+                        # 4. STORE TOKEN IN PARAMETER STORE
+                        # -------------------------------------------------
+
+                        echo "Storing encrypted ECR token in Parameter Store..."
+
+
+                        aws ssm put-parameter \
+                            --cli-input-json "file://${PARAMETER_FILE}" \
                             --region "$AWS_DEFAULT_REGION" \
-                            --command-id "$COMMAND_ID" \
-                            --instance-id "$DEPLOY_INSTANCE_ID" \
-                            --query Status \
-                            --output text 2>/dev/null || true)
+                            >/dev/null
 
 
-                        case "$STATUS" in
+                        unset ECR_PASSWORD
+
+                        rm -f "$PARAMETER_FILE"
 
 
-                            Success)
-
-                                echo "Deployment completed successfully."
-
-                                aws ssm get-command-invocation \
-                                    --region "$AWS_DEFAULT_REGION" \
-                                    --command-id "$COMMAND_ID" \
-                                    --instance-id "$DEPLOY_INSTANCE_ID" \
-                                    --query StandardOutputContent \
-                                    --output text
-
-                                exit 0
-
-                                ;;
+                        echo "Temporary token stored successfully."
 
 
-                            Failed|TimedOut|Cancelled|DeliveryTimedOut|ExecutionTimedOut|Undeliverable|Terminated)
+                        # -------------------------------------------------
+                        # 5. SEND DEPLOYMENT COMMAND TO APPLICATION EC2
+                        # -------------------------------------------------
 
-                                echo "Deployment failed: $STATUS"
-
-                                aws ssm get-command-invocation \
-                                    --region "$AWS_DEFAULT_REGION" \
-                                    --command-id "$COMMAND_ID" \
-                                    --instance-id "$DEPLOY_INSTANCE_ID" \
-                                    --query StandardErrorContent \
-                                    --output text || true
-
-                                exit 1
-
-                                ;;
-
-                        esac
+                        echo "Sending deployment command to application EC2..."
 
 
-                        sleep 5
+                        COMMAND_ID=$(aws ssm send-command \
+                            --region "$AWS_DEFAULT_REGION" \
+                            --instance-ids "$DEPLOY_INSTANCE_ID" \
+                            --document-name "AWS-RunShellScript" \
+                            --comment "Deploy SecureNotes build ${BUILD_NUMBER}" \
+                            --timeout-seconds 900 \
+                            --parameters file://ssm-parameters.json \
+                            --query "Command.CommandId" \
+                            --output text)
 
-                    done
+
+                        echo "SSM Command ID: $COMMAND_ID"
 
 
-                    echo "Deployment timed out."
+                        # -------------------------------------------------
+                        # 6. WAIT FOR DEPLOYMENT
+                        # -------------------------------------------------
 
-                    exit 1
-                '''
+                        echo "Waiting for application deployment..."
 
 
-                sh 'rm -f ssm-parameters.json'
+                        for i in $(seq 1 120); do
+
+
+                            STATUS=$(aws ssm get-command-invocation \
+                                --region "$AWS_DEFAULT_REGION" \
+                                --command-id "$COMMAND_ID" \
+                                --instance-id "$DEPLOY_INSTANCE_ID" \
+                                --query Status \
+                                --output text 2>/dev/null || true)
+
+
+                            case "$STATUS" in
+
+
+                                Success)
+
+                                    echo "Deployment completed successfully."
+
+
+                                    aws ssm get-command-invocation \
+                                        --region "$AWS_DEFAULT_REGION" \
+                                        --command-id "$COMMAND_ID" \
+                                        --instance-id "$DEPLOY_INSTANCE_ID" \
+                                        --query StandardOutputContent \
+                                        --output text
+
+
+                                    exit 0
+
+                                    ;;
+
+
+                                Failed|TimedOut|Cancelled|DeliveryTimedOut|ExecutionTimedOut|Undeliverable|Terminated)
+
+                                    echo "Deployment failed: $STATUS"
+
+
+                                    echo "Remote error output:"
+
+                                    aws ssm get-command-invocation \
+                                        --region "$AWS_DEFAULT_REGION" \
+                                        --command-id "$COMMAND_ID" \
+                                        --instance-id "$DEPLOY_INSTANCE_ID" \
+                                        --query StandardErrorContent \
+                                        --output text || true
+
+
+                                    echo "Remote command output:"
+
+                                    aws ssm get-command-invocation \
+                                        --region "$AWS_DEFAULT_REGION" \
+                                        --command-id "$COMMAND_ID" \
+                                        --instance-id "$DEPLOY_INSTANCE_ID" \
+                                        --query StandardOutputContent \
+                                        --output text || true
+
+
+                                    exit 1
+
+                                    ;;
+
+                            esac
+
+
+                            sleep 5
+
+                        done
+
+
+                        echo "Deployment timed out."
+
+                        exit 1
+                    '''
+                }
             }
         }
     }
@@ -828,7 +1059,7 @@ exit 1
 
     // =============================================================
     // GLOBAL POST: SECURITY REPORT GENERATION
-    // Runs after every build, including unstable and failed builds.
+    // Runs after every build, including UNSTABLE and FAILED builds.
     // =============================================================
 
     post {
@@ -844,10 +1075,15 @@ exit 1
 
 
                     // -------------------------------------------------
-                    // RETRIEVE REPORTS
+                    // RETRIEVE ALL AVAILABLE REPORTS
                     // -------------------------------------------------
 
-                    ['report-tool', 'reports-source', 'reports-image', 'reports-zap'].each { name ->
+                    [
+                        'report-tool',
+                        'reports-source',
+                        'reports-image',
+                        'reports-zap'
+                    ].each { name ->
 
                         try {
 
@@ -861,10 +1097,11 @@ exit 1
 
 
                     // -------------------------------------------------
-                    // GENERATE HTML SECURITY REPORT
+                    // GENERATE CONSOLIDATED HTML REPORT
                     // -------------------------------------------------
 
                     if (fileExists('generate_report.py')) {
+
 
                         int reportRc = sh(
 
@@ -910,7 +1147,7 @@ exit 1
 
                         } catch (Throwable t) {
 
-                            echo 'HTML Publisher unavailable. Download security-report.html from build artifacts.'
+                            echo 'HTML Publisher unavailable. Download reports from build artifacts.'
                         }
 
                     } else {
@@ -921,7 +1158,7 @@ exit 1
 
 
                 // -----------------------------------------------------
-                // ARCHIVE SCAN REPORTS
+                // ARCHIVE ALL REPORTS
                 // -----------------------------------------------------
 
                 archiveArtifacts(
@@ -937,3 +1174,4 @@ exit 1
         }
     }
 }
+```
