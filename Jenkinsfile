@@ -1,3 +1,4 @@
+
 // =====================================================================
 // DevSecOps Pipeline
 // Source Scan -> Docker Build -> Image Scan -> DAST -> AWS ECR Push
@@ -106,7 +107,7 @@ pipeline {
                             ).trim()
                         }
 
-                        // Stash the report generator for the built-in node.
+                        // Stash report generator for the built-in node.
                         stash name: 'report-tool',
                               includes: 'generate_report.py',
                               allowEmpty: true
@@ -160,7 +161,7 @@ pipeline {
 
 
                         // =============================================
-                        // BANDIT
+                        // BANDIT - PYTHON SAST
                         // =============================================
 
                         stage('Bandit - Python SAST') {
@@ -180,7 +181,7 @@ pipeline {
 
 
                         // =============================================
-                        // SEMGREP
+                        // SEMGREP - SAST
                         // =============================================
 
                         stage('Semgrep - SAST') {
@@ -200,7 +201,7 @@ pipeline {
 
 
                         // =============================================
-                        // PIP-AUDIT
+                        // PIP-AUDIT - DEPENDENCY SCANNING
                         // =============================================
 
                         stage('pip-audit - Dependency Scanning') {
@@ -220,7 +221,7 @@ pipeline {
 
 
                         // =============================================
-                        // SYFT - SBOM
+                        // SYFT - SBOM GENERATION
                         // =============================================
 
                         stage('Syft - SBOM Generation') {
@@ -322,7 +323,7 @@ pipeline {
 
 
                 // -----------------------------------------------------
-                // TRIVY CONTAINER SCANNING
+                // TRIVY CONTAINER IMAGE SCANNING
                 // -----------------------------------------------------
 
                 stage('Trivy - Container Image Scanning') {
@@ -341,7 +342,7 @@ pipeline {
 
 
                             // HIGH and CRITICAL vulnerability check.
-                            // Unfixed vulnerabilities are excluded from this gate.
+                            // Unfixed vulnerabilities are excluded.
 
                             runScan(
                                 'Trivy Security Scan',
@@ -485,8 +486,8 @@ pipeline {
         // STAGE 4: AWS ECR IMAGE PUSH
         // Agent: built-in
         //
-        // This stage is reached even when security findings exist.
-        // It still requires successful Docker build and application stages.
+        // Security findings do not block this stage.
+        // Docker build and application stages must still succeed.
         // =============================================================
 
         stage('Stage-4: AWS ECR Image Push') {
@@ -506,7 +507,77 @@ pipeline {
 
                         passwordVariable: 'AWS_SECRET_ACCESS_KEY'
                     )
-                ])
+                ]) {
+
+                    sh '''
+
+                        set -e
+
+                        set +x
+
+                        export AWS_DEFAULT_REGION=ap-south-1
+
+
+                        // Check AWS CLI availability.
+
+                        if command -v aws >/dev/null 2>&1; then
+
+                            AWS_CLI="$(command -v aws)"
+
+                        elif [ -x /usr/local/bin/aws ]; then
+
+                            AWS_CLI="/usr/local/bin/aws"
+
+                        else
+
+                            echo "ERROR: AWS CLI is not installed on this Jenkins node."
+
+                            exit 1
+                        fi
+
+
+                        echo "AWS CLI found: $AWS_CLI"
+
+
+                        // Get AWS account ID.
+
+                        ACCOUNT_ID=$("$AWS_CLI" sts get-caller-identity \
+                            --query Account \
+                            --output text)
+
+
+                        ECR_REGISTRY="${ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com"
+
+                        ECR_IMAGE="${ECR_REGISTRY}/devsecops_repo:${BUILD_NUMBER}"
+
+
+                        echo "Logging in to AWS ECR..."
+
+
+                        "$AWS_CLI" ecr get-login-password \
+                            --region "$AWS_DEFAULT_REGION" | \
+                            docker login \
+                                --username AWS \
+                                --password-stdin "$ECR_REGISTRY"
+
+
+                        echo "Tagging Docker image..."
+
+
+                        docker tag \
+                            devsecops-demo-api:${BUILD_NUMBER} \
+                            "$ECR_IMAGE"
+
+
+                        echo "Pushing Docker image to ECR..."
+
+
+                        docker push "$ECR_IMAGE"
+
+
+                        echo "Successfully pushed image: $ECR_IMAGE"
+
+                    '''
                 }
             }
         }
@@ -570,20 +641,8 @@ pipeline {
 
                             unstable('Security report generator returned a non-zero exit code.')
 
-                            echo "WARNING: Report generator returned exit code ${reportRc}. Continuing post actions."
+                            echo "WARNING: Report generator returned exit code ${reportRc}."
                         }
-
-
-                        // -------------------------------------------------
-                        // ARCHIVE REPORTS
-                        // -------------------------------------------------
-
-                        archiveArtifacts(
-
-                            artifacts: '*.json,*.txt,*.html',
-
-                            allowEmptyArchive: true
-                        )
 
 
                         // -------------------------------------------------
@@ -619,7 +678,9 @@ pipeline {
                 }
 
 
-                // Archive generated reports
+                // -----------------------------------------------------
+                // ARCHIVE ALL REPORTS
+                // -----------------------------------------------------
 
                 archiveArtifacts(
 
