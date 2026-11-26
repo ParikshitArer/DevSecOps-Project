@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#101a2d">
+  <title>SecureNotes — Private workspace</title>
+  <link rel="stylesheet" href="/static/styles.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <div class="ambient ambient-one" aria-hidden="true"></div>
+  <div class="ambient ambient-two" aria-hidden="true"></div>
+
+  <main id="authView" class="auth-layout">
+    <section class="auth-brand-panel">
+      <div class="brand brand-large">
+        <span class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 32 32" fill="none"><path d="M16 3.5 26 7v8.1c0 6.1-4.2 10.5-10 13.4C10.2 25.6 6 21.2 6 15.1V7l10-3.5Z" stroke="currentColor" stroke-width="1.8"/><path d="m11.7 15.5 2.8 2.8 5.9-6.1" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </span>
+        <span>Secure<span class="brand-light">Notes</span></span>
+      </div>
+      <div class="brand-copy">
+        <div class="eyebrow"><span class="eyebrow-dot"></span> YOUR PRIVATE WORKSPACE</div>
+        <h1>Clear your mind.<br><span>Keep what matters.</span></h1>
+        <p>A quiet, secure place for the notes, ideas and details you don't want to lose.</p>
+      </div>
+      <div class="auth-preview" aria-hidden="true">
+        <div class="preview-top"><span></span><span></span><span></span><small>MY WORKSPACE</small></div>
+        <div class="preview-content">
+          <div class="preview-line short"></div>
+          <div class="preview-line medium"></div>
+          <div class="preview-note"><div class="preview-note-icon">✦</div><div><b>Ideas worth keeping</b><small>Small thoughts become big things.</small></div><span>•••</span></div>
+          <div class="preview-note muted"><div class="preview-note-icon violet">↗</div><div><b>Project checklist</b><small>Plan the next steps.</small></div><span>•••</span></div>
+        </div>
+      </div>
+      <div class="brand-foot"><span>Built for focus.</span><span>Protected by your API's authentication.</span></div>
+    </section>
+
+    <section class="auth-side">
+      <div class="auth-card">
+        <div class="mobile-brand brand">
+          <span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 32 32" fill="none"><path d="M16 3.5 26 7v8.1c0 6.1-4.2 10.5-10 13.4C10.2 25.6 6 21.2 6 15.1V7l10-3.5Z" stroke="currentColor" stroke-width="1.8"/><path d="m11.7 15.5 2.8 2.8 5.9-6.1" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+          <span>Secure<span class="brand-light">Notes</span></span>
+        </div>
+        <div class="auth-heading">
+          <div class="eyebrow muted-eyebrow">WELCOME TO YOUR SPACE</div>
+          <h2 id="authTitle">Welcome back</h2>
+          <p id="authSubtitle">Sign in to pick up where you left off.</p>
+        </div>
+        <div class="auth-tabs" role="tablist" aria-label="Authentication mode">
+          <button id="loginTab" class="auth-tab active" type="button" role="tab" aria-selected="true">Sign in</button>
+          <button id="registerTab" class="auth-tab" type="button" role="tab" aria-selected="false">Create account</button>
+        </div>
+        <form id="authForm" autocomplete="on">
+          <label class="field-label" for="authUsername">Username</label>
+          <div class="input-wrap"><span class="input-icon" aria-hidden="true">@</span><input id="authUsername" name="username" type="text" minlength="3" maxlength="32" pattern="[A-Za-z0-9_]{3,32}" autocomplete="username" placeholder="your_username" required></div>
+          <div class="field-row"><label class="field-label" for="authPassword">Password</label><span id="passwordHint" class="field-hint">Your account password</span></div>
+          <div class="input-wrap"><span class="input-icon lock-icon" aria-hidden="true">⌑</span><input id="authPassword" name="password" type="password" minlength="10" maxlength="128" autocomplete="current-password" placeholder="Enter your password" required><button id="togglePassword" class="password-toggle" type="button" aria-label="Show password">Show</button></div>
+          <p id="registerRules" class="form-hint hidden">Use 10–128 characters with at least one uppercase letter, one lowercase letter and one number. Usernames may contain letters, numbers and underscores.</p>
+          <button id="authSubmit" class="button button-primary auth-submit" type="submit"><span>Sign in securely</span><span aria-hidden="true">→</span></button>
+          <p id="authMessage" class="form-message" role="status" aria-live="polite"></p>
+        </form>
+        <div class="auth-foot"><span class="tiny-shield" aria-hidden="true">◆</span> Your password is never stored in this browser.</div>
+      </div>
+      <div class="auth-side-foot">SECURENOTES API <span id="authApiStatus" class="status-dot status-checking"></span><span id="authApiText">Checking service…</span></div>
+    </section>
+  </main>
+
+  <div id="appView" class="app-shell hidden">
+    <aside class="sidebar">
+      <div class="brand sidebar-brand">
+        <span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 32 32" fill="none"><path d="M16 3.5 26 7v8.1c0 6.1-4.2 10.5-10 13.4C10.2 25.6 6 21.2 6 15.1V7l10-3.5Z" stroke="currentColor" stroke-width="1.8"/><path d="m11.7 15.5 2.8 2.8 5.9-6.1" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+        <span>Secure<span class="brand-light">Notes</span></span>
+      </div>
+      <div class="sidebar-label">WORKSPACE</div>
+      <nav class="side-nav" aria-label="Main navigation">
+        <button id="notesNav" class="nav-item active" type="button"><span class="nav-icon">▤</span><span>My notes</span><span id="navNoteCount" class="nav-count">0</span></button>
+        <button id="adminNav" class="nav-item" type="button"><span class="nav-icon">◫</span><span>Admin console</span><span class="admin-lock">ADMIN</span></button>
+      </nav>
+      <div class="sidebar-spacer"></div>
+      <div class="sidebar-security">
+        <div class="security-icon">✓</div>
+        <div><b>API connection</b><span id="sidebarApiText">Checking status…</span></div>
+        <span id="sidebarApiDot" class="status-dot status-checking"></span>
+      </div>
+      <div class="sidebar-bottom"><span class="sidebar-version">SECURENOTES <span>•</span> API CLIENT</span><span class="sidebar-version">SESSION-BASED SIGN IN</span></div>
+    </aside>
+
+    <main class="main-area">
+      <header class="topbar">
+        <div class="breadcrumbs"><span>Workspace</span><span class="crumb-slash">/</span><b id="breadcrumbCurrent">My notes</b></div>
+        <div class="topbar-actions">
+          <div class="connection-pill"><span id="topApiDot" class="status-dot status-checking"></span><span id="topApiText">Checking API</span></div>
+          <div class="user-menu"><div id="userAvatar" class="avatar">U</div><div class="user-meta"><b id="currentUsername">User</b><span>Personal workspace</span></div></div>
+          <button id="logoutButton" class="button button-quiet logout-button" type="button">Sign out <span aria-hidden="true">↗</span></button>
+        </div>
+      </header>
+
+      <section id="notesView" class="page-view">
+        <div class="page-heading">
+          <div><div class="eyebrow muted-eyebrow">A LITTLE SPACE FOR BIG IDEAS</div><h1>Your notes<span class="heading-period">.</span></h1><p>Capture a thought. Keep your next step close.</p></div>
+          <button id="newNoteButton" class="button button-primary new-note-button" type="button"><span class="plus-icon">＋</span> New note</button>
+        </div>
+
+        <div class="workspace-grid">
+          <section class="notes-panel panel">
+            <div class="panel-heading"><div><h2>All notes</h2><p><span id="notesTotal">0</span> saved in your space</p></div><span class="panel-heading-mark">✳</span></div>
+            <div class="search-wrap"><span aria-hidden="true">⌕</span><input id="noteSearch" type="search" maxlength="50" placeholder="Search by title…" aria-label="Search notes"><kbd>⌘ K</kbd></div>
+            <div id="notesList" class="notes-list" aria-live="polite"><div class="list-skeleton"><span></span><span></span><span></span></div></div>
+            <div class="notes-panel-foot"><span class="small-lock">◆</span> Only you can see your notes.</div>
+          </section>
+
+          <section class="editor-panel panel">
+            <div id="editorEmpty" class="editor-empty">
+              <div class="empty-illustration"><div class="empty-sheet sheet-back"></div><div class="empty-sheet sheet-front"><span></span><span></span><span></span><i>✦</i></div></div>
+              <h2>Your next thought starts here.</h2>
+              <p>Select a note to read it, or create a new one to get started.</p>
+              <button id="emptyNewNote" class="button button-secondary" type="button">Create your first note <span>→</span></button>
+            </div>
+            <div id="editorContent" class="editor-content hidden">
+              <div class="editor-toolbar"><div class="editor-state"><span class="editor-state-dot"></span><span id="editorStateText">NEW NOTE</span></div><div class="editor-actions"><span id="savedDate" class="saved-date"></span><button id="deleteNoteButton" class="icon-button delete-button" type="button" aria-label="Delete note" title="Delete note">⌫</button></div></div>
+              <div class="editor-fields">
+                <label class="sr-only" for="noteTitle">Note title</label>
+                <input id="noteTitle" class="note-title-input" type="text" maxlength="100" placeholder="Give this note a title…">
+                <div class="title-underline"></div>
+                <label class="sr-only" for="noteBody">Note body</label>
+                <textarea id="noteBody" class="note-body-input" maxlength="2000" placeholder="Start writing. Your ideas are safe here…"></textarea>
+              </div>
+              <div class="editor-footer"><div class="editor-hints"><span id="bodyCount">0 / 2,000</span><span class="hint-divider">·</span><span>Saved to your private space</span></div><button id="saveNoteButton" class="button button-primary save-button" type="button">Save note <span>→</span></button></div>
+            </div>
+          </section>
+        </div>
+        <div class="page-footnote"><span class="footnote-star">✦</span> Your notes are private to your account and protected by API authorization.</div>
+      </section>
+
+      <section id="adminView" class="page-view hidden">
+        <div class="page-heading admin-heading"><div><div class="eyebrow muted-eyebrow">SYSTEM OVERVIEW</div><h1>Admin console<span class="heading-period">.</span></h1><p>Platform visibility for authorized administrators.</p></div><button id="refreshAdminButton" class="button button-secondary" type="button">↻ Refresh</button></div>
+        <div id="adminDenied" class="admin-denied hidden"><div class="denied-icon">⌁</div><h2>Administrator access required</h2><p>This account does not have the admin role. Your notes remain available from My notes.</p><button id="backToNotesButton" class="button button-secondary" type="button">Back to my notes</button></div>
+        <div id="adminContent" class="hidden">
+          <div class="stats-grid"><article class="stat-card"><span class="stat-label">TOTAL USERS</span><div id="adminUsersCount" class="stat-value">—</div><span class="stat-caption">Registered accounts</span><span class="stat-symbol">♙</span></article><article class="stat-card stat-card-accent"><span class="stat-label">TOTAL NOTES</span><div id="adminNotesCount" class="stat-value">—</div><span class="stat-caption">Notes across the platform</span><span class="stat-symbol">▤</span></article></div>
+          <section class="panel admin-users-panel"><div class="panel-heading"><div><h2>Registered users</h2><p>Accounts known to SecureNotes</p></div><span class="panel-heading-mark">♙</span></div><div class="table-scroll"><table><thead><tr><th>USER</th><th>ROLE</th><th>USER ID</th><th>CREATED</th></tr></thead><tbody id="adminUsersTable"><tr><td colspan="4" class="table-placeholder">Loading users…</td></tr></tbody></table></div></section>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div id="toastRegion" class="toast-region" aria-live="polite" aria-atomic="true"></div>
+</body>
+</html>

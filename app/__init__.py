@@ -18,7 +18,6 @@ def create_app(overrides=None):
 
     db.init_app(app)
     limiter.init_app(app)
-
     from .admin import bp as admin_bp
     from .auth import bp as auth_bp
     from .cli import create_admin
@@ -32,7 +31,6 @@ def create_app(overrides=None):
     if os.environ.get("ENABLE_VULN_DEMO") == "1":
         # Training only. See demo/README.md. Never set this in a real deployment.
         from .legacy import bp as legacy_bp
-
         app.register_blueprint(legacy_bp)
 
     @app.after_request
@@ -40,7 +38,19 @@ def create_app(overrides=None):
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["X-Frame-Options"] = "DENY"
         response.headers["Referrer-Policy"] = "no-referrer"
-        response.headers["Content-Security-Policy"] = "default-src 'none'; frame-ancestors 'none'"
+        # The browser client is served by this Flask app. Assets and API calls
+        # remain same-origin; no third-party scripts, styles or connections are allowed.
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'self'; "
+            "base-uri 'self'; "
+            "form-action 'self'; "
+            "frame-ancestors 'none'; "
+            "object-src 'none'; "
+            "script-src 'self'; "
+            "style-src 'self'; "
+            "img-src 'self' data:; "
+            "connect-src 'self'"
+        )
         response.headers["Permissions-Policy"] = "geolocation=(), camera=(), microphone=()"
         response.headers["Cache-Control"] = "no-store"
         if request.is_secure:
